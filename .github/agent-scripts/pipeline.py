@@ -22,6 +22,7 @@ the GitHub workflow, from the artefacts produced here.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import re
@@ -252,6 +253,29 @@ def redact(out: Path) -> int:
     return hits
 
 
+def secret_needles(value: str) -> dict[str, str]:
+    """Plain, reversed, hex and base64 forms of a secret; base64 for all 3 byte alignments."""
+    raw = value.encode()
+    needles = {"plain": value, "reversed": value[::-1], "hex": raw.hex()}
+    for name, enc in (("base64", base64.b64encode), ("base64url", base64.urlsafe_b64encode)):
+        for shift in range(3):
+            core = enc(b"\0" * shift + raw).decode().rstrip("=")
+            # Drop the characters influenced by unknown neighbouring bytes.
+            core = core[4 if shift else 0:-4]
+            if len(core) >= 12:
+                needles[f"{name}#{shift}"] = core
+    return needles
+
+
+def secret_leaks(text: str) -> list[str]:
+    found = []
+    for key, value in secret_env().items():
+        if len(value) < 8:
+            continue
+        found += [f"{key} ({form})" for form, needle in secret_needles(value).items() if needle in text]
+    return found
+
+
 def auth_available() -> str | None:
     secrets = secret_env()
     if secrets.get("ANTHROPIC_API_KEY"):
@@ -366,6 +390,13 @@ def stage_gate(args) -> dict:
         raise SystemExit(f"make_patch failed: {p.stderr}")
     g = run([sys.executable, str(GATE), str(out / "agent.patch"), "--output", str(out / "gate.json")])
     gate = read_json(out / "gate.json")
+    leaks = secret_leaks((out / "agent.patch").read_text(errors="replace"))
+    if leaks:
+        # Fail closed: the patch never leaves this job, not even as an artefact.
+        (out / "agent.patch").write_text("")
+        gate.update(accepted=False, empty=False, files=[],
+                    problems=[f"patch contains a credential: {', '.join(sorted(set(leaks)))}"])
+        write_json(out / "gate.json", gate)
     log(f"gate: {'ACCEPTED' if gate['accepted'] else 'REJECTED'} ({len(gate['files'])} file(s))")
     if g.returncode != 0:
         for problem in gate["problems"]:

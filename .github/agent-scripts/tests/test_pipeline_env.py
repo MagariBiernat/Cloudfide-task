@@ -58,3 +58,30 @@ def test_local_run_fails_when_the_agent_could_not_run(tmp_path, monkeypatch):
 
     (tmp_path / "verify.json").write_text(json.dumps({"status": "passed"}))
     assert pipeline.local_exit_code(tmp_path) == 0
+
+
+def test_gate_stage_fails_closed_on_encoded_secret_in_patch(tmp_path, monkeypatch):
+    import base64
+    secret = "sk-ant-api03-very-secret-value-0123456789"
+    monkeypatch.setenv("UTA_ENV_FILE", str(tmp_path / "none.env"))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", secret)
+    pipeline = load("pipeline")
+    for leaked in (secret, secret[::-1], base64.b64encode(b"xy" + secret.encode()).decode(), secret.encode().hex()):
+        assert pipeline.secret_leaks(f"+X = '{leaked}'\n"), leaked
+    assert pipeline.secret_leaks("+assert True\n") == []
+
+    out = tmp_path / "out"
+    (out / "head/backend/tests").mkdir(parents=True)
+    (out / "workspace/backend/tests").mkdir(parents=True)
+    encoded = base64.b64encode(secret.encode()).decode()
+    (out / "workspace/backend/tests/test_x.py").write_text(f"X = '{encoded}'\n")
+
+    class Args:
+        pass
+    args = Args()
+    args.out = out
+    gate = pipeline.stage_gate(args)
+
+    assert gate["accepted"] is False
+    assert "credential" in gate["problems"][0]
+    assert (out / "agent.patch").read_text() == ""
