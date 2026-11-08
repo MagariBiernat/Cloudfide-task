@@ -85,3 +85,38 @@ def test_gate_stage_fails_closed_on_encoded_secret_in_patch(tmp_path, monkeypatc
     assert gate["accepted"] is False
     assert "credential" in gate["problems"][0]
     assert (out / "agent.patch").read_text() == ""
+
+
+def test_redact_handles_encoded_forms_and_binary_files(tmp_path, monkeypatch):
+    import base64
+    secret = "sk-ant-api03-very-secret-value-0123456789"
+    monkeypatch.setenv("UTA_ENV_FILE", str(tmp_path / "none.env"))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", secret)
+    pipeline = load("pipeline")
+    out = tmp_path / "out"
+    (out / "transcript").mkdir(parents=True)
+    (out / "transcript/a.jsonl").write_text("x " + base64.b64encode(secret.encode()).decode() + " y")
+    (out / "transcript/b.bin").write_bytes(b"\xff\xfe" + secret[::-1].encode())
+
+    assert pipeline.redact(out) == 2
+    assert not pipeline.secret_leaks((out / "transcript/a.jsonl").read_text())
+    assert (out / "transcript/b.bin").read_bytes() == b""
+
+
+def test_any_gate_rejection_empties_the_uploaded_patch(tmp_path, monkeypatch):
+    monkeypatch.setenv("UTA_ENV_FILE", str(tmp_path / "none.env"))
+    pipeline = load("pipeline")
+    out = tmp_path / "out"
+    (out / "head/backend/app").mkdir(parents=True)
+    (out / "workspace/backend/app").mkdir(parents=True)
+    (out / "workspace/backend/app/evil.py").write_text("x = 1\n")
+
+    class Args:
+        pass
+    args = Args()
+    args.out = out
+    gate = pipeline.stage_gate(args)
+
+    assert gate["accepted"] is False
+    assert any("allowlist" in p for p in gate["problems"])
+    assert (out / "agent.patch").read_text() == ""

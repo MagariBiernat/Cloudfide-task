@@ -262,7 +262,8 @@ jobs:
           path: out
       - name: Re-gate the patch with the trusted gate
         run: |
-          if [ -f out/agent.patch ]; then
+          # Empty = rejected in the agent job (gate.json from that job is kept) or no changes.
+          if [ -s out/agent.patch ]; then
             python3 trusted/.github/agent-scripts/gate.py out/agent.patch --output out/gate.json || true
           fi
       - name: Verify independently (repeat/shuffle, fails-on-base, suites, coverage)

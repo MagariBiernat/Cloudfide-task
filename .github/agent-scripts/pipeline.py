@@ -232,23 +232,37 @@ def secret_env() -> dict[str, str]:
 
 
 def redact(out: Path) -> int:
-    """Strip credential values from everything the agent produced before it is uploaded or rendered."""
-    values = [v for v in secret_env().values() if len(v) >= 8]
+    """Remove credentials from every agent output file before it is uploaded or rendered.
+
+    Every encoded form from secret_needles() is replaced; a file that is not valid UTF-8 and
+    contains a credential in any form is emptied, since a byte-level edit cannot be trusted.
+    """
+    needles = sorted({n for v in secret_env().values() if len(v) >= 8 for n in secret_needles(v).values()},
+                     key=len, reverse=True)
     hits = 0
     targets = [out / n for n in ("report.json", "agent-result.json", "agent-stderr.log")]
     for d in ("agent-report", "transcript"):
         targets += [f for f in (out / d).rglob("*") if f.is_file()] if (out / d).exists() else []
     for f in targets:
         try:
-            text = f.read_text()
-        except (OSError, UnicodeDecodeError):
+            raw = f.read_bytes()
+        except OSError:
+            continue
+        try:
+            text, binary = raw.decode(), False
+        except UnicodeDecodeError:
+            text, binary = raw.decode(errors="replace"), True
+        if binary:
+            if secret_leaks(text) or CREDENTIAL_RX.search(text):
+                f.write_bytes(b"")
+                hits += 1
             continue
         new = text
-        for v in values:
-            new = new.replace(v, "[REDACTED]")
+        for needle in needles:
+            new = new.replace(needle, "[REDACTED]")
         new = CREDENTIAL_RX.sub("[REDACTED]", new)
         if new != text:
-            f.write_text(new)
+            f.write_text(new if not secret_leaks(new) else "")
             hits += 1
     return hits
 
@@ -390,13 +404,15 @@ def stage_gate(args) -> dict:
         raise SystemExit(f"make_patch failed: {p.stderr}")
     g = run([sys.executable, str(GATE), str(out / "agent.patch"), "--output", str(out / "gate.json")])
     gate = read_json(out / "gate.json")
-    leaks = secret_leaks((out / "agent.patch").read_text(errors="replace"))
+    leaks = secret_leaks((out / "agent.patch").read_bytes().decode(errors="replace"))
     if leaks:
-        # Fail closed: the patch never leaves this job, not even as an artefact.
-        (out / "agent.patch").write_text("")
         gate.update(accepted=False, empty=False, files=[],
                     problems=[f"patch contains a credential: {', '.join(sorted(set(leaks)))}"])
         write_json(out / "gate.json", gate)
+    if not gate["accepted"]:
+        # Fail closed: a rejected patch never leaves this job, not even as an artefact.
+        # gate.json keeps the reasons for the PR comment.
+        (out / "agent.patch").write_text("")
     log(f"gate: {'ACCEPTED' if gate['accepted'] else 'REJECTED'} ({len(gate['files'])} file(s))")
     if g.returncode != 0:
         for problem in gate["problems"]:

@@ -134,6 +134,7 @@ _See the example feature PR linked in the README of the repository._
 - **The `agent` job runs PR code with the API key in the process environment.** No network sandbox is enabled. On Linux, test code could read the `claude` process environment.
   - Mitigations: forks don't run automatically, test subprocesses get a scrubbed env, reads outside the workspace are denied, the gate rejects credential-like literals, and outputs are redacted.
   - Same-repo PRs can also edit the workflow file itself, so the `test-agent` environment protection is what really guards the secret.
+  - Leak detection checks plain, reversed, hex and base64 forms of the key in the patch and in every uploaded output. A rejected or leaking patch is emptied before upload. A key split into pieces or encoded some other way is not detected. Only isolation closes that gap, not filtering.
 - **fails-on-base is file-level, and it swaps every changed source of the stack at once.** It is a strong signal, not a per-test mutation score.
 - **Backend flakiness is checked by repetition only, without random ordering.**
 - **Pure deletions in a diff have no "changed lines"** to aim coverage at.
