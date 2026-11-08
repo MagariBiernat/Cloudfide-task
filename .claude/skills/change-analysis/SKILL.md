@@ -39,7 +39,7 @@ re-running.
 
 - `backend/app/<pkg>/<module>.py` → `backend/tests/<pkg>/test_<module>.py`
   (every test directory is a package: add `__init__.py` when creating a new one).
-- `frontend/src/<path>/X.ts(x)` → `frontend/src/<path>/X.test.ts(x)` (co-located).
+- `frontend/src/<path>/X.ts(x)` → `frontend/src/<path>/X.test.ts(x)` (co-located); `.tsx` for components and for `hooks/` (they need a JSX provider wrapper). An existing sibling `.ts`/`.tsx` test wins.
 
 ## Interpreting results
 

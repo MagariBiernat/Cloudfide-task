@@ -117,7 +117,7 @@ def run_frontend(root: Path, files: list[str], coverage: bool, shuffle: bool, ti
     if shuffle:
         cmd.append("--sequence.shuffle")
     if coverage:
-        cmd += ["--coverage", f"--coverage.reportsDirectory={out_dir / 'frontend-coverage'}"]
+        cmd += ["--coverage", "--coverage.reportOnFailure=true", f"--coverage.reportsDirectory={out_dir / 'frontend-coverage'}"]
     cmd += [f.removeprefix("frontend/") for f in files]
     proc, duration, timed_out = _exec(cmd, frontend, timeout)
     result = _parse_vitest(report) if report.exists() else _empty()

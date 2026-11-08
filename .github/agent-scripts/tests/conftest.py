@@ -1,4 +1,5 @@
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
@@ -16,6 +17,8 @@ SCRIPTS = {
     "pipeline": REPO / ".github/agent-scripts/pipeline.py",
 }
 GUARD_HOOK = REPO / ".claude/hooks/guard_paths.py"
+# pipeline.py reads <repo>/.env at import time; tests must never see a developer's real key.
+os.environ["UTA_ENV_FILE"] = str(REPO / ".github/agent-scripts/tests/does-not-exist.env")
 
 
 def load(name: str):

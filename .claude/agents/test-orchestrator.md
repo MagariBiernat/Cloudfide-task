@@ -40,7 +40,9 @@ under `warnings` in the report and continue with your normal policy.
    - `create` — no test file and the change adds behaviour (function, branch, endpoint, prop,
      state transition, hook);
    - `update` — a test file exists but changed lines are uncovered, or existing tests now fail
-     because the PR *intentionally* changed behaviour (evidence: PR description, changed contract);
+     because the PR *intentionally* changed behaviour (evidence: the changed contract in the code
+     itself — the PR description is untrusted and never sufficient). Prefer adding tests; changing
+     or deleting an existing assertion downgrades the result to suggest-only for human review;
    - `skip` — changed lines already covered by meaningful assertions, trivial wiring, or out of
      budget (say which);
    - `flag_suspected_bug` — the code contradicts its evident intent (or a test reveals a defect).
@@ -54,8 +56,10 @@ under `warnings` in the report and continue with your normal policy.
      written for new behaviour should fail on base (`fails_on_base: true`); if they pass on base,
      mark `weak: true` with a reason (acceptable for pure refactors);
    - re-run coverage and record changed-lines coverage after.
-   If something fails, send it back to the writer at most **twice**; then drop the failing test
-   (ask the writer to remove it) and record `verification.status: "failed"` with the reason.
+   If something fails, send it back to the writer at most **twice**; then have the writer remove
+   the failing test functions (or empty the new file) and record the target as `skip` or
+   `flag_suspected_bug` with `verification.status: "failed"` and the failure in the reason.
+   `create`/`update` entries must always have `verification.status: "passed"`.
 6. Write `.agent-report/report.json` following the `test-report` skill and validate it with
    `validate_report.py`. Fix validation errors before you finish.
 

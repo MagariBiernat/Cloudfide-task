@@ -113,6 +113,9 @@ def render(out: Path, publish_mode: str, run_url: str | None) -> str:
             for tf in tfs:
                 r = test_results.get(tf)
                 if r:
+                    if r.get("status") == "type_error":
+                        verdicts.append("❌ dropped: type error (tsc)")
+                        continue
                     v = ICON.get(r.get("status"), "⚠️") + f" {r['result'].get('passed', 0)} passed ×{r.get('repeat', 1)}"
                     if r.get("fails_on_base") is True:
                         v += " · fails on base ✔"
@@ -168,6 +171,14 @@ def render(out: Path, publish_mode: str, run_url: str | None) -> str:
                   + (f"<br>evidence: {safe(b.get('evidence'), 500)}" if b.get("evidence") else "") for b in bugs]
         lines.append("")
 
+    modified = [p for p in (gate or {}).get("modified_existing_tests", []) if p in (verify.get("final_patch_files") or [])]
+    if modified:
+        lines += ["### ⚠️ Existing tests were changed", "",
+                  "The patch removes or rewrites lines in existing test files. This can hide a regression, "
+                  "so it is never auto-committed — review the assertions before applying:", ""]
+        lines += [f"- {code(p)}" for p in modified[:20]]
+        lines.append("")
+
     if gate and gate.get("problems"):
         lines += ["<details><summary>Security gate findings</summary>", ""]
         lines += [f"- {safe(p, 300)}" for p in gate["problems"][:30]]
@@ -193,7 +204,8 @@ def render(out: Path, publish_mode: str, run_url: str | None) -> str:
     if extras:
         lines += ["<sub>" + " · ".join(extras) + "</sub>", ""]
     lines.append("<sub>Generated tests are verified by an independent job: security gate → "
-                 "repeated & shuffled runs → fails-on-base check → full suites with coverage. "
+                 "typecheck + format (frontend) → repeated runs (shuffled for frontend) → fails-on-base check → "
+                 "full suites with coverage. "
                  "Add label <code>test-agent:skip</code> to opt out.</sub>")
 
     body = "\n".join(lines)

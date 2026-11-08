@@ -41,6 +41,7 @@ def test_missing_vite_coverage_block_fails_loudly(mods, project):
     ("backend/app/factory.py", "backend", "backend/tests/test_factory.py"),
     ("frontend/src/lib/http.ts", "frontend", "frontend/src/lib/http.test.ts"),
     ("frontend/src/features/todos/TodosPage.tsx", "frontend", "frontend/src/features/todos/TodosPage.test.tsx"),
+    ("frontend/src/features/todos/hooks/useTodos.ts", "frontend", "frontend/src/features/todos/hooks/useTodos.test.tsx"),
 ])
 def test_test_path_follows_repository_conventions(mods, path, stack, expected):
     assert mods["map_changes"].test_path_for(path, stack) == expected
@@ -101,3 +102,10 @@ def test_backfill_lists_only_source_files(mods, project):
     result = mods["map_changes"].analyse(project, None, scope)
     assert [t["path"] for t in result["targets"]] == ["backend/app/core/config.py"]
     assert result["mode"] == "backfill"
+
+
+def test_existing_sibling_test_file_wins_over_the_preferred_extension(mods):
+    head = {"frontend/src/features/todos/hooks/useNotice.test.ts": "x"}
+    assert mods["map_changes"].existing_test_path(
+        "frontend/src/features/todos/hooks/useNotice.ts", "frontend", head
+    ) == "frontend/src/features/todos/hooks/useNotice.test.ts"

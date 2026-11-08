@@ -9,22 +9,22 @@ One entry point for executing tests. It strips secrets from the environment (tes
 from an untrusted PR), uses only locally installed binaries, enforces a timeout and returns
 normalised JSON.
 
-```bash
-R=.claude/skills/test-runner/scripts/run_tests.py
+Always type the full literal command on one line (no shell variables, no `\` continuations,
+no `cd`/`&&`): only the literal `python3 .claude/skills/...` prefix is allowed to run.
 
+```bash
 # Specific files (paths repo-relative or stack-relative)
-python3 $R backend  --root . backend/tests/features/todos/test_router.py
-python3 $R frontend --root . frontend/src/lib/http.test.ts
+python3 .claude/skills/test-runner/scripts/run_tests.py backend --root . backend/tests/features/todos/test_router.py
+python3 .claude/skills/test-runner/scripts/run_tests.py frontend --root . frontend/src/lib/http.test.ts
 
 # Whole suite with coverage
-python3 $R backend --root . --coverage --out-dir .agent-report/cov
+python3 .claude/skills/test-runner/scripts/run_tests.py backend --root . --coverage --out-dir .agent-report/cov
 
 # Flakiness: N runs, random order (vitest); mixed results => status "flaky"
-python3 $R frontend --root . frontend/src/lib/http.test.ts --repeat 3 --shuffle
+python3 .claude/skills/test-runner/scripts/run_tests.py frontend --root . frontend/src/lib/http.test.ts --repeat 3 --shuffle
 
 # Fails-on-base: swap the changed sources for their base versions, run, restore
-python3 $R backend --root . backend/tests/features/todos/test_router.py \
-  --against-base .agent-context/base --swap backend/app/features/todos/router.py
+python3 .claude/skills/test-runner/scripts/run_tests.py backend --root . backend/tests/features/todos/test_router.py --against-base .agent-context/base --swap backend/app/features/todos/router.py
 ```
 
 ## Result

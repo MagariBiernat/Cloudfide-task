@@ -10,6 +10,8 @@ UID_GID    := $(shell id -u):$(shell id -g)
 PY_IMAGE   := python:3.12-slim
 NODE_IMAGE := node:22-alpine
 VENV       := backend/.venv
+# Host venv uses the CI interpreter (3.12): on 3.14 the existing tests break (create_autospec + lazy annotations).
+PYTHON     ?= $(shell command -v python3.12 2>/dev/null || uv python find 3.12 2>/dev/null || echo python3)
 VENV_PY    := $(CURDIR)/$(VENV)/bin/python
 
 # Named volumes cache dependencies between runs (fast + no root-owned node_modules on host).
@@ -36,7 +38,7 @@ help: ## Show available targets
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-24s\033[0m %s\n", $$1, $$2}'
 
 env: ## Create .env from .env.example if missing
-	@test -f .env || (cp .env.example .env && echo "Created .env from .env.example")
+	@test -f .env || (install -m 600 .env.example .env && echo "Created .env from .env.example (chmod 600)")
 
 check-docker: ## Verify Docker CLI + daemon + compose plugin are available
 	@command -v docker >/dev/null 2>&1 || { \
@@ -106,9 +108,9 @@ storybook: check-docker ## [docker] Storybook -> http://localhost:6006
 # --- Tests on the host (no Docker) --------------------------------------------
 
 $(VENV_PY):
-	@python3 -c "import ensurepip" 2>/dev/null || { \
+	@$(PYTHON) -c "import ensurepip" 2>/dev/null || { \
 		echo "ERROR: python venv support missing. Run: sudo apt install python3.12-venv"; exit 1; }
-	python3 -m venv $(VENV)
+	$(PYTHON) -m venv $(VENV)
 	$(VENV_PY) -m pip install -q --upgrade pip
 	$(VENV_PY) -m pip install -q -r backend/requirements.txt
 
@@ -144,25 +146,17 @@ clean-local: ## [host] Remove backend/.venv, frontend/node_modules and coverage 
 #   make backfill                         whole-repo coverage backfill
 # Publishing is a dry-run locally: see .agent-out/pr-comment.md and .agent-out/final.patch
 # (apply with: git apply .agent-out/final.patch).
-# Model credentials: export ANTHROPIC_API_KEY=... (or UTA_USE_LOCAL_LOGIN=1 to use `claude` login).
+# Model credentials + limits: .env (make env, then fill ANTHROPIC_API_KEY).
 
-# Optional, outside the repo (chmod 600): ANTHROPIC_API_KEY=sk-ant-...
-UTA_ENV_FILE ?= $(HOME)/.config/cloudfide/agent.env
-ifneq ($(wildcard $(UTA_ENV_FILE)),)
-include $(UTA_ENV_FILE)
-export ANTHROPIC_API_KEY
-ifdef UTA_MODEL
-export UTA_MODEL
-endif
-ifdef UTA_MAX_BUDGET_USD
-export UTA_MAX_BUDGET_USD
-endif
-endif
+# Agent config + credentials: .env in the repo root (gitignored, see .env.example), read by
+# pipeline.py itself: the key is passed only to the agent process, never to npm/pip or tests.
+# UTA_ENV_FILE=~/.config/cloudfide/agent.env (chmod 600) keeps the key outside the repo.
+UTA_ENV_FILE ?= $(CURDIR)/.env
 
 BASE ?= origin/main
 HEAD ?= HEAD
 PIPELINE := python3 .github/agent-scripts/pipeline.py --base $(BASE) --head $(HEAD)
-PIPELINE_ENV := TASKLY_PYTHON=$(VENV_PY)
+PIPELINE_ENV := TASKLY_PYTHON=$(VENV_PY) UTA_ENV_FILE=$(UTA_ENV_FILE)
 
 pipeline: install-local ## [agent] Full local pipeline: prepare -> agent -> verify -> report
 	$(PIPELINE_ENV) $(PIPELINE) all $(PIPELINE_ARGS)

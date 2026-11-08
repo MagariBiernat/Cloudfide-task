@@ -180,8 +180,20 @@ def test_path_for(path: str, stack: str) -> str | None:
         return str(Path("backend/tests") / rel.parent / f"test_{rel.name}")
     if stack == "frontend" and path.startswith("frontend/src/"):
         p = Path(path)
-        return str(p.with_name(f"{p.stem}.test{p.suffix}"))
+        # Hooks need a JSX provider wrapper, so their tests are .tsx (frontend-test-conventions).
+        suffix = ".tsx" if p.suffix == ".tsx" or "hooks" in p.parts else p.suffix
+        return str(p.with_name(f"{p.stem}.test{suffix}"))
     return None
+
+
+def existing_test_path(path: str, stack: str, head_files: set[str]) -> str | None:
+    """The conventional test path, or the sibling .ts/.tsx variant if that one already exists."""
+    preferred = test_path_for(path, stack)
+    if preferred and stack == "frontend" and preferred not in head_files:
+        alt = preferred[:-1] if preferred.endswith(".tsx") else preferred + "x"
+        if alt in head_files:
+            return alt
+    return preferred
 
 
 # --------------------------------------------------------------------------- diffing
@@ -328,7 +340,7 @@ def analyse(head_dir: Path, base_dir: Path | None, scope: CoverageScope) -> dict
             else scope.frontend_in_scope(path) if stack == "frontend" and role == "source"
             else False
         )
-        test_path = test_path_for(path, stack) if role == "source" else None
+        test_path = existing_test_path(path, stack, head_files) if role == "source" else None
         t = Target(
             path=path, status=status, stack=stack, role=role,
             kind=classify_kind(path, stack), in_coverage_scope=in_scope,

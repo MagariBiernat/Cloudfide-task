@@ -18,20 +18,18 @@ Reports: `<out>/backend-coverage.json` and `<out>/frontend-coverage/lcov.info`.
 
 ## 2. Ask questions
 
-```bash
-S=.claude/skills/coverage-insight/scripts/coverage.py
-R=.agent-report/cov-before
+One literal command per line (no shell variables or `\` continuations — only the literal
+`python3 .claude/skills/...` prefix is allowed to run):
 
+```bash
 # Which changed lines are not executed by any test? (PR mode)
-python3 $S changed --changes .agent-context/changes.json \
-  --backend $R/backend-coverage.json --frontend $R/frontend-coverage/lcov.info --frontend-root frontend
+python3 .claude/skills/coverage-insight/scripts/coverage.py changed --changes .agent-context/changes.json --backend .agent-report/cov-before/backend-coverage.json --frontend .agent-report/cov-before/frontend-coverage/lcov.info --frontend-root frontend
 
 # Biggest gaps (backfill mode)
-python3 $S gaps --limit 12 --backend $R/backend-coverage.json \
-  --frontend $R/frontend-coverage/lcov.info --frontend-root frontend
+python3 .claude/skills/coverage-insight/scripts/coverage.py gaps --limit 12 --backend .agent-report/cov-before/backend-coverage.json --frontend .agent-report/cov-before/frontend-coverage/lcov.info --frontend-root frontend
 
 # Totals
-python3 $S summary --backend $R/backend-coverage.json --frontend $R/frontend-coverage/lcov.info --frontend-root frontend
+python3 .claude/skills/coverage-insight/scripts/coverage.py summary --backend .agent-report/cov-before/backend-coverage.json --frontend .agent-report/cov-before/frontend-coverage/lcov.info --frontend-root frontend
 ```
 
 ## Reading the numbers
@@ -39,7 +37,8 @@ python3 $S summary --backend $R/backend-coverage.json --frontend $R/frontend-cov
 - `changed.files[].uncovered_changed_lines` — the precise lines a new test should execute.
   Empty list + `changed_executable > 0` ⇒ already covered: usually `skip`, unless the PR
   changed behaviour that existing assertions do not check (then `update`).
-- `measured: false` ⇒ the file was not loaded by any test at all (0 % — strong `create` signal).
+- `measured: false` ⇒ the file was not loaded by any test at all (0 % — strong `create` signal),
+  provided the report itself exists. No report file at all means the run failed — fix that first.
 - `lines_pct` counts executable lines only; coverage.py's own "Cover" column also mixes in
   branches, so numbers can differ by a few points. Report the numbers from this script.
 - Coverage is evidence, not the goal: a covered line without an assertion on its effect is

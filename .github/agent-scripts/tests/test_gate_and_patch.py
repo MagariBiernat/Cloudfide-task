@@ -140,3 +140,62 @@ def test_patch_applies_inside_a_directory_nested_in_another_git_repo(mods, trees
     ok, detail = mods["pipeline"].apply_patch(target, patch)
     assert ok, detail
     assert (target / "backend/tests/test_new.py").exists()
+
+
+def _added(path, *lines, new=True):
+    header = f"diff --git a/{path} b/{path}\n" + ("new file mode 100644\n" if new else "")
+    return header + "@@ -0,0 +1 @@\n" + "".join(f"+{l}\n" for l in lines)
+
+
+@pytest.mark.parametrize("line", [
+    "it.skipIf(true)('x', () => {})",
+    "describe.runIf(false)('x', () => {})",
+    "test.fails('x', () => {})",
+    "test.concurrent.skip('x', () => {})",
+    "pytest.importorskip('fastapi')",
+    "@unittest.skip('later')",
+    "def pytest_runtest_makereport(item, call):",
+    "    outcome.force_result(None)",
+    "    item.add_marker('skip')",
+    "collect_ignore = ['test_router.py']",
+    "pytestmark = []",
+    "    report.outcome = 'passed'",
+    "sys.modules['app.core.config'] = fake",
+    "open('/proc/self/environ').read()",
+    "KEY = 'sk-ant-api03-abcdefghijklmnop'",
+])
+def test_gate_rejects_result_manipulation_and_secret_access(mods, line):
+    target = "frontend/src/lib/x.test.ts" if "(" in line and "describe" in line or line.startswith(("it.", "test.")) \
+        else "backend/tests/test_x.py"
+    assert gate(mods, _added(target, line)), line
+
+
+def test_gate_rejects_new_nested_conftest_but_allows_appending_to_root(mods):
+    assert gate(mods, _added("backend/tests/features/conftest.py", "import pytest"))
+    assert gate(mods, _added("backend/tests/conftest.py", "import pytest", new=False)) == []
+
+
+def test_gate_reports_existing_tests_that_lost_lines(mods, tmp_path):
+    patch = tmp_path / "p.patch"
+    patch.write_text(
+        "diff --git a/backend/tests/test_x.py b/backend/tests/test_x.py\n"
+        "@@ -1,2 +1,2 @@\n def test_x():\n-    assert f() == 2\n+    assert f() == 3\n"
+    )
+    out = tmp_path / "gate.json"
+    mods["gate"].main([str(patch), "--output", str(out)])
+    import json
+    verdict = json.loads(out.read_text())
+    assert verdict["accepted"] is True
+    assert verdict["modified_existing_tests"] == ["backend/tests/test_x.py"]
+
+
+def test_widened_imports_do_not_count_as_modified_tests(mods, tmp_path):
+    patch = tmp_path / "p.patch"
+    patch.write_text(
+        "diff --git a/backend/tests/test_x.py b/backend/tests/test_x.py\n"
+        "@@ -1,2 +1,3 @@\n-from app.x import a\n+from app.x import a, b\n+\n def test_x():\n"
+    )
+    out = tmp_path / "gate.json"
+    mods["gate"].main([str(patch), "--output", str(out)])
+    import json
+    assert json.loads(out.read_text())["modified_existing_tests"] == []
