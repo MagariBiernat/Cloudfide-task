@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from .mappers import from_model
@@ -46,3 +46,8 @@ class TodoRepository:
         self.session.delete(record)
         self.session.commit()
         return True
+
+    def delete_completed(self) -> int:
+        result = self.session.execute(delete(TodoRecord).where(TodoRecord.completed.is_(True)))
+        self.session.commit()
+        return result.rowcount
