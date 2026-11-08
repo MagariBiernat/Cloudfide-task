@@ -16,3 +16,6 @@ htmlcov/
 # Recruitment instructions (must not be published)
 task.md
 plan.md
+
+# Unit-test agent pipeline output
+.agent-out/

@@ -1,0 +1,383 @@
+name: unit-test-agent
+
+# Agentic PR workflow: analyse the change, let the agent create/update unit tests,
+# verify them independently, publish results to the PR.
+#
+# Trust model
+#   detect   no checkout of PR code, no secrets            -> decides whether to run
+#   agent    PR code + ANTHROPIC_API_KEY, contents:read    -> produces a PATCH (artefact) only
+#   verify   PR code + patch, NO secrets, contents:read    -> gate + independent test runs
+#   publish  write token, never executes PR code           -> git apply + commit + comment
+# Agent config, prompts and all pipeline scripts come from the BASE revision, never from the PR.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+    paths:
+      - "backend/app/**"
+      - "backend/tests/**"
+      - "frontend/src/**"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "pr = generate tests for a PR, backfill = raise coverage across the repo (opens a PR)"
+        type: choice
+        options: [pr, backfill]
+        default: pr
+      pr_number:
+        description: "PR number (mode=pr)"
+        required: false
+
+permissions: {}
+
+concurrency:
+  group: unit-test-agent-${{ github.event.pull_request.number || inputs.pr_number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CLAUDE_CODE_VERSION: "2.1.319"
+  OUT: ${{ github.workspace }}/out
+
+jobs:
+  detect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run: ${{ steps.d.outputs.run }}
+      reason: ${{ steps.d.outputs.reason }}
+      mode: ${{ steps.d.outputs.mode }}
+      pr_number: ${{ steps.d.outputs.pr_number }}
+      base_sha: ${{ steps.d.outputs.base_sha }}
+      head_sha: ${{ steps.d.outputs.head_sha }}
+      head_ref: ${{ steps.d.outputs.head_ref }}
+      same_repo: ${{ steps.d.outputs.same_repo }}
+      allow_sensitive: ${{ steps.d.outputs.allow_sensitive }}
+      publish_mode: ${{ steps.d.outputs.publish_mode }}
+    steps:
+      - id: d
+        name: Decide whether the agent should run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          LABEL: ${{ github.event.label.name }}
+          SENDER_TYPE: ${{ github.event.sender.type }}
+          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_PR: ${{ inputs.pr_number }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          # Strip CR/LF: values (e.g. label names) must not be able to inject extra outputs.
+          out() { v="${2//$'\n'/ }"; printf '%s=%s\n' "$1" "${v//$'\r'/ }" >> "$GITHUB_OUTPUT"; }
+          skip() { out run false; out reason "$1"; echo "::notice::agent skipped: $1"; exit 0; }
+
+          mode="${INPUT_MODE:-pr}"
+          out mode "$mode"
+          if [ "$mode" = backfill ]; then
+            sha=$(gh api "repos/$REPO/commits/$DEFAULT_BRANCH" --jq .sha)
+            out base_sha "$sha"; out head_sha "$sha"; out head_ref "$DEFAULT_BRANCH"
+            out same_repo true; out allow_sensitive false; out publish_mode commit; out pr_number ""
+            out run true; out reason "backfill requested"; exit 0
+          fi
+
+          pr="${PR_NUMBER:-$INPUT_PR}"
+          [ -n "$pr" ] || skip "no pull request number"
+          gh api "repos/$REPO/pulls/$pr" > pr.json
+          out pr_number "$pr"
+          out base_sha "$(jq -r .base.sha pr.json)"
+          out head_sha "$(jq -r .head.sha pr.json)"
+          out head_ref "$(jq -r .head.ref pr.json)"
+          labels=$(jq -r '[.labels[].name] | join(",")' pr.json)
+          same_repo=$([ "$(jq -r .head.repo.full_name pr.json)" = "$REPO" ] && echo true || echo false)
+          out same_repo "$same_repo"
+          out allow_sensitive "$([[ ",$labels," == *",test-agent:run,"* ]] && echo true || echo false)"
+          out publish_mode "$([[ ",$labels," == *",test-agent:suggest-only,"* || $same_repo == false ]] && echo suggest-only || echo commit)"
+
+          [ "$(jq -r .state pr.json)" = open ] || skip "pull request is not open"
+          [ "$(jq -r .draft pr.json)" = false ] || skip "draft pull request"
+          # Forks never run automatically (no secrets on untrusted code). A maintainer may dispatch the
+          # workflow manually after reviewing the PR; results are then posted as a patch (suggest-only).
+          if [ "$same_repo" != true ] && [ "$EVENT" != workflow_dispatch ]; then
+            skip "pull request from a fork: a maintainer can run this workflow manually after review"
+          fi
+          [ "$SENDER_TYPE" != Bot ] || skip "event triggered by a bot (loop prevention)"
+          [[ ",$labels," != *",test-agent:skip,"* ]] || skip "label test-agent:skip"
+          if [ "$EVENT" = pull_request ] && [ "$ACTION" = labeled ] && [ "$LABEL" != test-agent:run ]; then
+            skip "label '$LABEL' does not trigger the agent"
+          fi
+          # The head commit made by this workflow carries a trailer; do not process our own output.
+          msg=$(gh api "repos/$REPO/commits/$(jq -r .head.sha pr.json)" --jq .commit.message)
+          [[ "$msg" != *"Test-Agent-Source:"* ]] || skip "head commit was produced by the unit-test agent"
+          out run true; out reason "ok"
+
+  agent:
+    needs: detect
+    if: needs.detect.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    environment: test-agent # holds ANTHROPIC_API_KEY; can require reviewers / branch policies
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout PR head (untrusted)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.detect.outputs.head_sha }}
+          fetch-depth: 0
+          path: repo
+          persist-credentials: false
+      - name: Checkout base revision (trusted agent config + scripts)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.detect.outputs.base_sha }}
+          path: trusted
+          persist-credentials: false
+          sparse-checkout: |
+            .claude
+            .github/agent-scripts
+      - name: Ensure the agent exists on the base branch
+        run: |
+          test -f trusted/.github/agent-scripts/pipeline.py || {
+            echo "::warning::unit-test agent is not installed on the base branch yet; nothing to do"; exit 1; }
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: repo/backend/requirements.txt
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22.12"
+          cache: npm
+          cache-dependency-path: repo/frontend/package-lock.json
+      - name: Install pinned Claude Code CLI (before any PR-controlled dependency)
+        run: npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" && claude --version
+      - name: Install project dependencies (no install scripts, wheels only)
+        run: |
+          python -m venv repo/backend/.venv
+          repo/backend/.venv/bin/pip install --only-binary=:all: -r repo/backend/requirements.txt
+          npm ci --prefix repo/frontend --ignore-scripts --no-audit --no-fund
+      - name: Prepare (snapshots, change mapping, decision)
+        run: >
+          python3 trusted/.github/agent-scripts/pipeline.py prepare
+          --repo repo --deps-root repo --out "$OUT"
+          --mode "${{ needs.detect.outputs.mode }}"
+          --base "${{ needs.detect.outputs.base_sha }}" --head "${{ needs.detect.outputs.head_sha }}"
+          ${{ needs.detect.outputs.allow_sensitive == 'true' && '--allow-sensitive' || '' }}
+      - name: Run agent (headless, budget-capped) + security gate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          UTA_MODEL: ${{ vars.UTA_MODEL }}
+          UTA_MAX_BUDGET_USD: ${{ vars.UTA_MAX_BUDGET_USD || '5' }}
+          PR_NUMBER: ${{ needs.detect.outputs.pr_number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: python3 trusted/.github/agent-scripts/pipeline.py agent --repo repo --deps-root repo --out "$OUT"
+      - name: Upload agent output (data only)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: agent-output
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            out/agent.patch
+            out/gate.json
+            out/report.json
+            out/agent-status.json
+            out/agent-result.json
+            out/agent-stderr.log
+            out/transcript/**
+
+  verify:
+    needs: [detect, agent]
+    if: always() && needs.detect.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read # no secrets in this job: PR code and generated tests run here
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.detect.outputs.head_sha }}
+          fetch-depth: 0
+          path: repo
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.detect.outputs.base_sha }}
+          path: trusted
+          persist-credentials: false
+          sparse-checkout: |
+            .claude
+            .github/agent-scripts
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: repo/backend/requirements.txt
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22.12"
+          cache: npm
+          cache-dependency-path: repo/frontend/package-lock.json
+      - name: Install project dependencies
+        run: |
+          python -m venv repo/backend/.venv
+          repo/backend/.venv/bin/pip install --only-binary=:all: -r repo/backend/requirements.txt
+          npm ci --prefix repo/frontend --ignore-scripts --no-audit --no-fund
+      - name: Prepare snapshots (deterministic, same as agent job)
+        run: >
+          python3 trusted/.github/agent-scripts/pipeline.py prepare
+          --repo repo --deps-root repo --out "$OUT"
+          --mode "${{ needs.detect.outputs.mode }}"
+          --base "${{ needs.detect.outputs.base_sha }}" --head "${{ needs.detect.outputs.head_sha }}"
+          ${{ needs.detect.outputs.allow_sensitive == 'true' && '--allow-sensitive' || '' }}
+      - name: Download agent output
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: agent-output
+          path: out
+      - name: Re-gate the patch with the trusted gate
+        run: |
+          if [ -f out/agent.patch ]; then
+            python3 trusted/.github/agent-scripts/gate.py out/agent.patch --output out/gate.json || true
+          fi
+      - name: Verify independently (repeat/shuffle, fails-on-base, suites, coverage)
+        run: python3 trusted/.github/agent-scripts/pipeline.py verify --repo repo --deps-root repo --out "$OUT"
+      - name: Render report
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 trusted/.claude/skills/test-report/scripts/render_markdown.py --out-dir out \
+            --publish-mode "${{ needs.detect.outputs.publish_mode }}"
+          cat out/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: verify-output
+          retention-days: 7
+          path: |
+            out/*.json
+            out/*.md
+            out/*.patch
+            out/verify-reports/**/result.json
+
+  publish:
+    needs: [detect, verify]
+    if: always() && needs.detect.outputs.run == 'true' && needs.verify.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write       # push the verified tests
+      pull-requests: write  # sticky comment / backfill PR
+      statuses: write       # commit status on the bot commit
+      actions: write        # dispatch ci.yml: pushes made with GITHUB_TOKEN do not trigger workflows
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR: ${{ needs.detect.outputs.pr_number }}
+      MODE: ${{ needs.detect.outputs.mode }}
+      HEAD_SHA: ${{ needs.detect.outputs.head_sha }}
+      HEAD_REF: ${{ needs.detect.outputs.head_ref }}
+      PUBLISH_MODE: ${{ needs.detect.outputs.publish_mode }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.detect.outputs.base_sha }}
+          path: trusted
+          persist-credentials: false
+          sparse-checkout: |
+            .claude
+            .github/agent-scripts
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: verify-output
+          path: out
+      - name: Decide what to publish
+        id: plan
+        run: |
+          status=$(jq -r .status out/verify.json)
+          has_patch=$([ -s out/final.patch ] && echo true || echo false)
+          commit=false
+          if [ "$status" = passed ] && [ "$has_patch" = true ] && [ "$PUBLISH_MODE" = commit ]; then
+            python3 trusted/.github/agent-scripts/gate.py out/final.patch > /dev/null && commit=true
+          fi
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "status=$status has_patch=$has_patch commit=$commit"
+      - name: Checkout PR branch for the bot commit
+        if: steps.plan.outputs.commit == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.detect.outputs.head_ref }}
+          path: target
+      - name: Apply and push the verified patch (no PR code is executed)
+        if: steps.plan.outputs.commit == 'true'
+        id: push
+        working-directory: target
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ "$MODE" = backfill ]; then
+            branch="chore/test-backfill-${GITHUB_RUN_ID}"
+            git switch -c "$branch"
+          else
+            branch="$HEAD_REF"
+            # The branch must not have moved since the analysed commit.
+            if [ "$(git rev-parse HEAD)" != "$HEAD_SHA" ]; then
+              echo "superseded=true" >> "$GITHUB_OUTPUT"; echo "::notice::branch moved; result superseded"; exit 0
+            fi
+          fi
+          git apply --index ../out/final.patch
+          git commit -q -F - <<EOF
+          test: add unit tests generated by the unit-test agent
+
+          Verified by the independent verify job (repeat + shuffle, fails-on-base, full suites).
+          Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          Test-Agent-Source: ${HEAD_SHA}
+          EOF
+          git push origin "HEAD:refs/heads/$branch"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+      - name: Mark the bot commit as verified
+        if: steps.push.outputs.sha != ''
+        run: |
+          gh api "repos/$REPO/statuses/${{ steps.push.outputs.sha }}" -f state=success \
+            -f context="unit-test-agent/verify" -f description="Generated tests verified (repeat, fails-on-base, suites)" \
+            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+      - name: Run CI on the bot commit
+        if: steps.push.outputs.sha != ''
+        run: gh workflow run ci.yml --repo "$REPO" --ref "${{ steps.push.outputs.branch }}"
+      - name: Open backfill pull request
+        if: env.MODE == 'backfill' && steps.push.outputs.sha != ''
+        run: |
+          gh pr create --repo "$REPO" --base "$HEAD_REF" --head "${{ steps.push.outputs.branch }}" \
+            --title "test: coverage backfill by the unit-test agent" --body-file out/pr-comment.md
+      - name: Update sticky PR comment
+        if: env.MODE == 'pr' && env.PR != ''
+        run: |
+          set -euo pipefail
+          mode="$PUBLISH_MODE"
+          [ "${{ steps.plan.outputs.commit }}" = true ] || mode=suggest-only
+          [ "${{ steps.push.outputs.superseded }}" != true ] || mode=suggest-only
+          python3 trusted/.claude/skills/test-report/scripts/render_markdown.py --out-dir out --publish-mode "$mode" \
+            --run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          if [ "$mode" = suggest-only ] && [ -s out/final.patch ]; then
+            { echo; echo "<details><summary>Verified patch (apply with <code>git apply</code>)</summary>"; echo;
+              echo '```diff'; head -c 50000 out/final.patch; echo '```'; echo "</details>"; } >> out/pr-comment.md
+          fi
+          marker='<!-- unit-test-agent:sticky -->'
+          id=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+                 --jq ".[] | select(.user.type == \"Bot\" and (.body | startswith(\"$marker\"))) | .id" | head -n1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@out/pr-comment.md > /dev/null
+          else
+            gh api "repos/$REPO/issues/$PR/comments" -F body=@out/pr-comment.md > /dev/null
+          fi

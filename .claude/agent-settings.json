@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "defaultMode": "dontAsk",
+    "allow": [
+      "Read",
+      "Grep",
+      "Glob",
+      "Skill",
+      "Agent",
+      "TodoWrite",
+      "Edit(backend/tests/**)",
+      "Write(backend/tests/**)",
+      "Edit(frontend/src/**/*.test.ts)",
+      "Edit(frontend/src/**/*.test.tsx)",
+      "Write(frontend/src/**/*.test.ts)",
+      "Write(frontend/src/**/*.test.tsx)",
+      "Edit(frontend/src/test/**)",
+      "Write(frontend/src/test/**)",
+      "Write(.agent-report/**)",
+      "Edit(.agent-report/**)",
+      "Bash(python3 .claude/skills/change-analysis/scripts/map_changes.py:*)",
+      "Bash(python3 .claude/skills/coverage-insight/scripts/coverage.py:*)",
+      "Bash(python3 .claude/skills/test-runner/scripts/run_tests.py:*)",
+      "Bash(python3 .claude/skills/test-report/scripts/validate_report.py:*)"
+    ],
+    "deny": [
+      "WebFetch",
+      "WebSearch",
+      "Bash(curl:*)",
+      "Bash(wget:*)",
+      "Bash(git:*)",
+      "Bash(gh:*)",
+      "Bash(npm:*)",
+      "Bash(npx:*)",
+      "Bash(pip:*)",
+      "Bash(pip3:*)",
+      "Bash(env:*)",
+      "Bash(printenv:*)",
+      "Read(.env)",
+      "Read(.env.*)",
+      "Read(**/.env)",
+      "Edit(.claude/**)",
+      "Write(.claude/**)",
+      "Edit(.github/**)",
+      "Write(.github/**)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard_paths.py\""
+          }
+        ]
+      }
+    ]
+  }
+}

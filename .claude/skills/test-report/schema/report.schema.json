@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/MagariBiernat/Cloudfide-task/unit-test-agent/report.schema.json",
+  "title": "Unit test agent report",
+  "type": "object",
+  "required": ["mode", "summary", "files", "skills_used", "warnings"],
+  "additionalProperties": false,
+  "properties": {
+    "mode": {"enum": ["pr", "backfill"]},
+    "summary": {"type": "string", "maxLength": 1000},
+    "files": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {
+        "type": "object",
+        "required": ["source", "stack", "decision", "reason", "test_files", "tests_added", "verification"],
+        "additionalProperties": false,
+        "properties": {
+          "source": {"type": "string"},
+          "stack": {"enum": ["backend", "frontend", "repo", "agent-config"]},
+          "decision": {"enum": ["create", "update", "skip", "flag_suspected_bug"]},
+          "reason": {"type": "string", "minLength": 5, "maxLength": 600},
+          "test_files": {"type": "array", "items": {"type": "string"}},
+          "tests_added": {"type": "array", "items": {"type": "string"}},
+          "verification": {
+            "type": "object",
+            "required": ["status"],
+            "additionalProperties": false,
+            "properties": {
+              "status": {"enum": ["passed", "failed", "flaky", "not_run"]},
+              "runs": {"type": "integer", "minimum": 0},
+              "fails_on_base": {"type": ["boolean", "null"]},
+              "weak": {"type": "boolean"},
+              "note": {"type": "string", "maxLength": 600}
+            }
+          },
+          "coverage": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "changed_lines_before": {"type": ["number", "null"]},
+              "changed_lines_after": {"type": ["number", "null"]},
+              "lines_before": {"type": ["number", "null"]},
+              "lines_after": {"type": ["number", "null"]}
+            }
+          }
+        }
+      }
+    },
+    "suspected_bugs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source", "description"],
+        "additionalProperties": false,
+        "properties": {
+          "source": {"type": "string"},
+          "description": {"type": "string", "maxLength": 1000},
+          "evidence": {"type": "string", "maxLength": 2000}
+        }
+      }
+    },
+    "skills_used": {"type": "array", "items": {"type": "string"}},
+    "warnings": {"type": "array", "items": {"type": "string", "maxLength": 600}}
+  }
+}

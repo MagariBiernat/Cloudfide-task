@@ -27,7 +27,9 @@ FRONTEND_RUN := docker run --rm -t \
 .PHONY: help env check-docker up down restart logs ps clean \
 	test test-backend test-frontend coverage coverage-backend coverage-frontend storybook \
 	install-local test-local test-backend-local test-frontend-local \
-	coverage-local coverage-backend-local coverage-frontend-local clean-local
+	coverage-local coverage-backend-local coverage-frontend-local clean-local \
+	pipeline pipeline-prepare pipeline-agent pipeline-verify pipeline-report backfill \
+	test-agent-scripts
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
@@ -135,3 +137,51 @@ coverage-frontend-local: frontend/node_modules ## [host] Frontend coverage -> fr
 
 clean-local: ## [host] Remove backend/.venv, frontend/node_modules and coverage output
 	rm -rf $(VENV) frontend/node_modules backend/coverage frontend/coverage
+
+# --- Unit-test agent pipeline (same code as the GitHub workflow) ---------------
+#   make pipeline                         base=origin/main, head=HEAD
+#   make pipeline BASE=main HEAD=WORKTREE test uncommitted changes, no commit needed
+#   make backfill                         whole-repo coverage backfill
+# Publishing is a dry-run locally: see .agent-out/pr-comment.md and .agent-out/final.patch
+# (apply with: git apply .agent-out/final.patch).
+# Model credentials: export ANTHROPIC_API_KEY=... (or UTA_USE_LOCAL_LOGIN=1 to use `claude` login).
+
+# Optional, outside the repo (chmod 600): ANTHROPIC_API_KEY=sk-ant-...
+UTA_ENV_FILE ?= $(HOME)/.config/cloudfide/agent.env
+ifneq ($(wildcard $(UTA_ENV_FILE)),)
+include $(UTA_ENV_FILE)
+export ANTHROPIC_API_KEY
+ifdef UTA_MODEL
+export UTA_MODEL
+endif
+ifdef UTA_MAX_BUDGET_USD
+export UTA_MAX_BUDGET_USD
+endif
+endif
+
+BASE ?= origin/main
+HEAD ?= HEAD
+PIPELINE := python3 .github/agent-scripts/pipeline.py --base $(BASE) --head $(HEAD)
+PIPELINE_ENV := TASKLY_PYTHON=$(VENV_PY)
+
+pipeline: install-local ## [agent] Full local pipeline: prepare -> agent -> verify -> report
+	$(PIPELINE_ENV) $(PIPELINE) all $(PIPELINE_ARGS)
+	@echo ""; echo "  PR comment preview: .agent-out/pr-comment.md"; echo "  Verified patch:     .agent-out/final.patch"
+
+pipeline-prepare: ## [agent] Snapshot base/head, map changes, decide whether to run the agent
+	$(PIPELINE_ENV) $(PIPELINE) prepare $(PIPELINE_ARGS)
+
+pipeline-agent: ## [agent] Run the agent in the prepared workspace + security gate
+	$(PIPELINE_ENV) $(PIPELINE) agent $(PIPELINE_ARGS)
+
+pipeline-verify: ## [agent] Independently verify the gated patch (no model involved)
+	$(PIPELINE_ENV) $(PIPELINE) verify $(PIPELINE_ARGS)
+
+pipeline-report: ## [agent] Render the PR comment preview
+	$(PIPELINE_ENV) $(PIPELINE) report $(PIPELINE_ARGS)
+
+backfill: install-local ## [agent] Coverage backfill over the whole repo (mode=backfill)
+	$(PIPELINE_ENV) $(PIPELINE) all --mode backfill $(PIPELINE_ARGS)
+
+test-agent-scripts: $(VENV_PY) ## [agent] Unit tests of the pipeline/skill scripts themselves
+	$(VENV_PY) -m pytest -c .github/agent-scripts/tests/pytest.ini .github/agent-scripts/tests
