@@ -198,8 +198,12 @@ def against_base(args, files: list[str], out_dir: Path) -> dict:
     backup = Path(tempfile.mkdtemp(prefix="base-swap-"))
     restored: list[tuple[Path, Path | None]] = []
     try:
+        root = args.root.resolve()
         for rel in swaps:
-            target = args.root / rel
+            target = (args.root / rel).resolve()
+            if not target.is_relative_to(root) or not (args.against_base / rel).resolve().is_relative_to(
+                    args.against_base.resolve()):
+                raise SystemExit(f"--swap path escapes the project root: {rel}")
             saved = None
             if target.exists():
                 saved = backup / rel

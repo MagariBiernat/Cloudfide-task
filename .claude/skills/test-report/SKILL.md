@@ -49,8 +49,7 @@ its own measurements, so report honestly — mismatches are highlighted to revie
 ## Validate before finishing
 
 ```bash
-python3 .claude/skills/test-report/scripts/validate_report.py .agent-report/report.json \
-  --changes .agent-context/changes.json
+python3 .claude/skills/test-report/scripts/validate_report.py .agent-report/report.json --changes .agent-context/changes.json
 ```
 
 Exit code 0 = valid. Fix every reported error.

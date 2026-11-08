@@ -34,6 +34,13 @@ IGNORED_DIRS = {
 }
 SENSITIVE_PREFIXES = (".claude/", ".github/", "CLAUDE.md", ".mcp.json")
 DOC_SUFFIXES = (".md", ".txt", ".rst")
+AGENT_CONFIG_NAMES = {"CLAUDE.md", "CLAUDE.local.md", ".mcp.json"}
+
+
+def is_nested_agent_config(path: str) -> bool:
+    """Agent instructions anywhere in the tree (Claude Code loads nested CLAUDE.md files)."""
+    parts = path.split("/")
+    return parts[-1] in AGENT_CONFIG_NAMES or ".claude" in parts[:-1]
 FRONTEND_SRC_SUFFIXES = (".ts", ".tsx")
 
 
@@ -121,7 +128,7 @@ def load_coverage_scope(root: Path) -> CoverageScope:
 # --------------------------------------------------------------------------- classification
 
 def classify_stack_role(path: str) -> tuple[str, str]:
-    if path.startswith(SENSITIVE_PREFIXES):
+    if path.startswith(SENSITIVE_PREFIXES) or is_nested_agent_config(path):
         return "agent-config", "sensitive"
     if path.startswith("backend/"):
         if path.startswith("backend/tests/"):

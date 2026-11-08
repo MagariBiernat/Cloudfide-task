@@ -12,8 +12,7 @@ which test file belongs to a source file — ask the script.
 
 ```bash
 # PR mode: compare snapshots (the pipeline prepares them for you)
-python3 .claude/skills/change-analysis/scripts/map_changes.py \
-  --base-dir .agent-context/base --head-dir . --candidates-only
+python3 .claude/skills/change-analysis/scripts/map_changes.py --base-dir .agent-context/base --head-dir . --candidates-only
 
 # Backfill mode: every source file in coverage scope
 python3 .claude/skills/change-analysis/scripts/map_changes.py --all --head-dir . --candidates-only

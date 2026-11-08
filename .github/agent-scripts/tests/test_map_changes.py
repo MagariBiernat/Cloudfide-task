@@ -109,3 +109,13 @@ def test_existing_sibling_test_file_wins_over_the_preferred_extension(mods):
     assert mods["map_changes"].existing_test_path(
         "frontend/src/features/todos/hooks/useNotice.ts", "frontend", head
     ) == "frontend/src/features/todos/hooks/useNotice.test.ts"
+
+
+@pytest.mark.parametrize("path", [
+    "frontend/src/CLAUDE.md",
+    "backend/.claude/skills/x/SKILL.md",
+    "frontend/src/features/.mcp.json",
+    "CLAUDE.local.md",
+])
+def test_nested_agent_config_is_sensitive(mods, path):
+    assert mods["map_changes"].classify_stack_role(path) == ("agent-config", "sensitive")

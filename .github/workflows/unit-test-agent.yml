@@ -141,6 +141,27 @@ jobs:
     permissions:
       contents: read
     steps:
+      # Egress allowlist: the API key lives in this job next to PR code, so nothing but the
+      # Anthropic API and the package/GitHub endpoints needed for setup is reachable.
+      - name: Block network egress except allowlisted endpoints
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        with:
+          egress-policy: block
+          disable-sudo: true
+          allowed-endpoints: >
+            api.anthropic.com:443
+            github.com:443
+            api.github.com:443
+            codeload.github.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            results-receiver.actions.githubusercontent.com:443
+            *.actions.githubusercontent.com:443
+            *.blob.core.windows.net:443
+            pypi.org:443
+            files.pythonhosted.org:443
+            registry.npmjs.org:443
+            nodejs.org:443
       - name: Checkout PR head (untrusted)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -179,6 +200,11 @@ jobs:
           repo/backend/.venv/bin/pip install --only-binary=:all: -r repo/backend/requirements.txt
           npm ci --prefix repo/frontend --ignore-scripts --no-audit --no-fund
       - name: Prepare (snapshots, change mapping, decision)
+        env:
+          # Written into .agent-context/pr.json here; untrusted, passed via env (never interpolated).
+          PR_NUMBER: ${{ needs.detect.outputs.pr_number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
         run: >
           python3 trusted/.github/agent-scripts/pipeline.py prepare
           --repo repo --deps-root repo --out "$OUT"
@@ -190,9 +216,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           UTA_MODEL: ${{ vars.UTA_MODEL }}
           UTA_MAX_BUDGET_USD: ${{ vars.UTA_MAX_BUDGET_USD || '5' }}
-          PR_NUMBER: ${{ needs.detect.outputs.pr_number }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY: ${{ github.event.pull_request.body }}
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
         run: python3 trusted/.github/agent-scripts/pipeline.py agent --repo repo --deps-root repo --out "$OUT"
       - name: Upload agent output (data only)
         if: always()
@@ -288,7 +312,8 @@ jobs:
 
   publish:
     needs: [detect, verify]
-    if: always() && needs.detect.outputs.run == 'true' && needs.verify.result == 'success'
+    # Runs even when verify failed, so the PR always gets a status and a comment.
+    if: always() && needs.detect.outputs.run == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -314,13 +339,21 @@ jobs:
             .claude
             .github/agent-scripts
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
         with:
           name: verify-output
           path: out
       - name: Decide what to publish
         id: plan
         run: |
-          status=$(jq -r .status out/verify.json)
+          mkdir -p out
+          status=$(jq -r '.status // "error"' out/verify.json 2>/dev/null || echo error)
+          # The agent was supposed to run but did not finish cleanly (credentials, budget, API error).
+          if [ "$(jq -r '.run_agent' out/decision.json 2>/dev/null)" = true ] && \
+             [ "$(jq -r '(.ran == true) and (.exit_code == 0) and (.is_error != true)' out/agent-status.json 2>/dev/null)" != true ] && \
+             [ "$status" != rejected ]; then
+            status=agent_failed
+          fi
           has_patch=$([ -s out/final.patch ] && echo true || echo false)
           commit=false
           modified=0
@@ -342,6 +375,8 @@ jobs:
           case "$STATUS" in
             passed) state=success; desc="Generated tests verified" ;;
             failed|rejected|apply_failed) state=failure; desc="Generated tests: $STATUS (see PR comment)" ;;
+            agent_failed) state=failure; desc="The agent did not complete (see workflow run)" ;;
+            error) state=error; desc="Verification job failed (see workflow run)" ;;
             *) state=success; desc="No test changes ($STATUS)" ;;
           esac
           gh api "repos/$REPO/statuses/$HEAD_SHA" -f state="$state" -f context="unit-test-agent" \
@@ -411,8 +446,11 @@ jobs:
           mode="$PUBLISH_MODE"
           [ "${{ steps.plan.outputs.commit }}" = true ] || mode=suggest-only
           [ "${{ steps.push.outputs.superseded }}" != true ] || mode=suggest-only
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           python3 trusted/.claude/skills/test-report/scripts/render_markdown.py --out-dir out --publish-mode "$mode" \
-            --run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            --run-url "$run_url" || printf '%s\n' '<!-- unit-test-agent:sticky -->' '## 🧪 Unit Test Agent' '' \
+            "⚠️ **The run did not produce a report** (status: \`${{ steps.plan.outputs.status }}\`). See the [workflow run]($run_url)." \
+            > out/pr-comment.md
           if [ "$mode" = suggest-only ] && [ -s out/final.patch ]; then
             { echo; echo "<details><summary>Verified patch (apply with <code>git apply</code>)</summary>"; echo;
               echo '```diff'; head -c 50000 out/final.patch; echo '```'; echo "</details>"; } >> out/pr-comment.md

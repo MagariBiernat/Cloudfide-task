@@ -166,7 +166,14 @@ def stage_prepare(args) -> dict:
 
     mode = args.mode
     head_sha = snapshot(repo, args.head, out / "head")
-    base_sha = snapshot(repo, args.base, out / "base") if mode == "pr" else head_sha
+    base_ref = args.base
+    if mode == "pr" and args.head != "WORKTREE":
+        # Diff against the merge base: if the base branch moved on, base.sha would show its
+        # newer commits as reverted by the PR and create false targets.
+        mb = run(["git", "-C", str(repo), "merge-base", args.base, args.head])
+        if mb.returncode == 0 and mb.stdout.strip():
+            base_ref = mb.stdout.strip()
+    base_sha = snapshot(repo, base_ref, out / "base") if mode == "pr" else head_sha
     if mode == "backfill":
         shutil.copytree(out / "head", out / "base", dirs_exist_ok=True, ignore=COPY_IGNORE, symlinks=True)
     log(f"mode={mode} base={base_sha[:12]} head={head_sha[:12]}")
@@ -183,6 +190,12 @@ def stage_prepare(args) -> dict:
     ws = out / "workspace"
     shutil.copytree(out / "head", ws, ignore=COPY_IGNORE, symlinks=True)
     shutil.rmtree(ws / ".claude", ignore_errors=True)
+    # Nested agent config from the PR (e.g. frontend/src/CLAUDE.md) would be loaded as instructions.
+    for nested in [*ws.rglob(".claude"), *ws.rglob("CLAUDE.md"), *ws.rglob("CLAUDE.local.md"), *ws.rglob(".mcp.json")]:
+        if nested.is_dir() and not nested.is_symlink():
+            shutil.rmtree(nested)
+        else:
+            nested.unlink(missing_ok=True)
     shutil.copytree(TRUSTED_ROOT / ".claude", ws / ".claude", ignore=COPY_IGNORE)
     ctx = ws / ".agent-context"
     ctx.mkdir()

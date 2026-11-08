@@ -120,3 +120,20 @@ def test_any_gate_rejection_empties_the_uploaded_patch(tmp_path, monkeypatch):
     assert gate["accepted"] is False
     assert any("allowlist" in p for p in gate["problems"])
     assert (out / "agent.patch").read_text() == ""
+
+
+def test_swap_rejects_paths_outside_the_project(tmp_path):
+    import argparse
+
+    import pytest
+
+    run_tests = load("run_tests")
+    root, base = tmp_path / "root", tmp_path / "base"
+    root.mkdir()
+    base.mkdir()
+    (tmp_path / "outside.py").write_text("keep\n")
+    args = argparse.Namespace(root=root, against_base=base, swap="../outside.py")
+
+    with pytest.raises(SystemExit, match="escapes"):
+        run_tests.against_base(args, [], tmp_path / "out")
+    assert (tmp_path / "outside.py").read_text() == "keep\n"
