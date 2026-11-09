@@ -91,6 +91,34 @@ def test_delete_missing_task_returns_404(client, repository_mock):
     assert response.json() == {"detail": "Task not found."}
 
 
+def test_clear_completed_returns_deleted_count_and_keeps_active_tasks(
+    client, repository_mock, todo
+):
+    repository_mock.delete_completed.return_value = 2
+    repository_mock.list.return_value = [todo]
+    response = client.delete("/api/todos/completed")
+    assert response.status_code == 200
+    assert response.json() == {"deleted": 2}
+    repository_mock.delete_completed.assert_called_once_with()
+    listing = client.get("/api/todos")
+    assert listing.json() == [todo.model_dump(mode="json")]
+
+
+def test_clear_completed_returns_zero_when_none_completed(client, repository_mock):
+    repository_mock.delete_completed.return_value = 0
+    response = client.delete("/api/todos/completed")
+    assert response.status_code == 200
+    assert response.json() == {"deleted": 0}
+
+
+def test_clear_completed_path_is_not_handled_by_id_delete_route(client, repository_mock):
+    repository_mock.delete_completed.return_value = 1
+    response = client.delete("/api/todos/completed")
+    assert response.status_code not in (404, 422)
+    repository_mock.delete.assert_not_called()
+    repository_mock.delete_completed.assert_called_once_with()
+
+
 @pytest.mark.parametrize("method", ["get", "patch", "delete"])
 @pytest.mark.parametrize("todo_id", ["0", "-1", "abc"])
 def test_non_positive_or_non_numeric_id_is_rejected(client, repository_mock, method, todo_id):

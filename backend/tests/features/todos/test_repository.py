@@ -1,7 +1,7 @@
 from datetime import date, datetime, timezone
 from unittest.mock import Mock, patch
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
 
@@ -113,3 +113,32 @@ def test_delete_removes_record_then_commits(model_factory, todo_values):
     assert TodoRepository(session).delete(7) is True
     session.delete.assert_called_once_with(record)
     assert [c[0] for c in session.mock_calls] == ["get", "delete", "commit"]
+
+
+def test_delete_completed_deletes_completed_rows_commits_and_returns_rowcount():
+    session = Mock(spec=Session)
+    session.execute.return_value.rowcount = 3
+    assert TodoRepository(session).delete_completed() == 3
+    statement = session.execute.call_args.args[0]
+    expected = delete(TodoRecord).where(TodoRecord.completed.is_(True))
+    assert statement.compare(expected)
+    compiled = str(statement.compile(dialect=postgresql.dialect()))
+    assert "DELETE FROM todos WHERE todos.completed IS true" in compiled
+    session.commit.assert_called_once_with()
+
+
+def test_delete_completed_returns_zero_when_nothing_completed():
+    session = Mock(spec=Session)
+    session.execute.return_value.rowcount = 0
+    assert TodoRepository(session).delete_completed() == 0
+    session.execute.assert_called_once()
+    session.commit.assert_called_once_with()
+    session.delete.assert_not_called()
+
+
+def test_delete_completed_executes_before_commit():
+    session = Mock(spec=Session)
+    session.execute.return_value.rowcount = 1
+    TodoRepository(session).delete_completed()
+    names = [c[0] for c in session.mock_calls if c[0] in ("execute", "commit")]
+    assert names == ["execute", "commit"]
