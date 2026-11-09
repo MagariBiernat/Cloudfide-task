@@ -13,6 +13,38 @@ it('passes the abort signal when fetching tasks', async () => {
   expect(request).toHaveBeenCalledWith('/todos', { signal })
 })
 
+it('sends only writable task fields on update with PATCH', async () => {
+  vi.mocked(request).mockResolvedValue(todoFixture)
+  await expect(todosApi.update(7, todoFixture)).resolves.toEqual(todoFixture)
+  expect(request).toHaveBeenCalledWith('/todos/7', {
+    method: 'PATCH',
+    body: JSON.stringify({
+      title: todoFixture.title,
+      description: '',
+      priority: 'medium',
+      due_date: null,
+      completed: false,
+    }),
+  })
+  const body = JSON.parse(vi.mocked(request).mock.calls[0][1]!.body as string)
+  expect(body).not.toHaveProperty('id')
+  expect(body).not.toHaveProperty('created_at')
+  expect(body).not.toHaveProperty('updated_at')
+})
+
+it('omits fields not provided in a partial update', async () => {
+  vi.mocked(request).mockResolvedValue(todoFixture)
+  await todosApi.update(3, { completed: true })
+  const body = JSON.parse(vi.mocked(request).mock.calls[0][1]!.body as string)
+  expect(body).toEqual({ completed: true })
+})
+
+it('deletes a task with DELETE', async () => {
+  vi.mocked(request).mockResolvedValue(undefined)
+  await expect(todosApi.remove(9)).resolves.toBeUndefined()
+  expect(request).toHaveBeenCalledWith('/todos/9', { method: 'DELETE' })
+})
+
 it('sends only writable task fields on creation', async () => {
   vi.mocked(request).mockResolvedValue(todoFixture)
   await expect(todosApi.create(todoFixture)).resolves.toEqual(todoFixture)
