@@ -1,5 +1,15 @@
 # Taskly App
 
+## Unit-test agent
+
+A Claude Code agent with reusable skills creates or updates unit tests for every pull request
+(backend + frontend), and an independent pipeline verifies them and posts the result to the PR.
+
+- Design, setup, example run and limitations: [SOLUTION.md](SOLUTION.md)
+- Example: [PR #1](https://github.com/MagariBiernat/Cloudfide-task/pull/1) — agent comment, decisions, verification
+- Agent and skills: `.claude/agents/`, `.claude/skills/`; workflow: `.github/workflows/unit-test-agent.yml`
+- Locally: `make env` (fill `ANTHROPIC_API_KEY`), then `make pipeline` / `make backfill`; `make help` lists all targets
+
 ## Setup
 
 ```sh
