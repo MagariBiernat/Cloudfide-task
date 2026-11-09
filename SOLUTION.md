@@ -56,7 +56,8 @@ Run flow:
 
 Prerequisites (GitHub repository settings):
 
-- **Settings → Environments → `test-agent`**, secret **`ANTHROPIC_API_KEY`**. Recommended: required reviewers / deployment-branch policy.
+- **Settings → Environments → `test-agent`**, secret **`ANTHROPIC_API_KEY`** and **required reviewers**. This repository has them enabled, so every agent run waits for a maintainer's approval before the key is exposed.
+  No deployment-branch policy is set: the agent job runs on the PR ref.
   Optional variables: `UTA_MODEL`, `UTA_MAX_BUDGET_USD` (default 5).
 - **Settings → Actions → Workflow permissions → "Allow GitHub Actions to create and approve pull requests"**, needed only for backfill PRs. Without it the branch is pushed and the job summary links to it.
 - Labels (optional): `test-agent:run`, `test-agent:skip`, `test-agent:suggest-only`:
@@ -109,6 +110,10 @@ The agent's own summary claimed 88.7 % frontend coverage. The pipeline measured 
 dropped after the agent finished. That gap is why the published numbers come from `verify`, never from the
 report.
 
+A second backfill (13 turns, 193 s, $1.11) targeted the remaining gaps: 9 more frontend files and `core/database.py`, all created or extended without touching existing assertions. All 10 files passed. Coverage: backend **98.6 % → 100 %** (68 tests), frontend **76.8 % → 98.7 %** (98 tests).
+
+The first backfill ran locally, so there was no PR for the gate's suggest-only verdict to land in. I reviewed the patch by hand before committing it straight to `main`, including the two existing test files whose child mocks were replaced. That is the same human-review step the workflow enforces for PRs.
+
 An earlier run on Python 3.14 is also instructive:
 
 - The existing backend tests fail on 3.14 (`create_autospec` + lazy annotations).
@@ -116,9 +121,33 @@ An earlier run on Python 3.14 is also instructive:
 - The gate rejected the whole patch (shared fixtures are append-only) and the local run exited non-zero.
 - The fix was environmental: the Makefile now builds the host venv with Python 3.12, the same as CI.
 
-### Pull request
+### Pull request: [#1 Add clear completed tasks action](https://github.com/MagariBiernat/Cloudfide-task/pull/1)
 
-_See the example feature PR linked in the README of the repository._
+**The feature.** A `DELETE /api/todos/completed` endpoint (repository + router + schema), an API function, a `useClearCompletedMutation` hook and a header button. It was pushed **without tests**, and it broke 10 existing `TodosPage` tests (the new hook was not mocked).
+
+**The run** ([workflow run](https://github.com/MagariBiernat/Cloudfide-task/actions/runs/42536088442)):
+
+1. `detect` → `agent`, which waited for environment approval → `verify` → `publish`.
+2. The agent ran for 172 s, 11 turns, $0.90.
+
+| File | Decision | Verification (pipeline) |
+|---|---|---|
+| `repository.py` | update | 12 passed ×3, fails on base ✔ |
+| `router.py` | update | 29 passed ×3, fails on base ✔ |
+| `TodosPage.tsx` | update: mocks the new hook, adds the clear flow | 15 passed ×3, fails on base ✔ |
+| `api/todos.ts` | update | 3 passed ×3, fails on base ✔ |
+| `TodosHeader.tsx` | update | 5 passed ×3, fails on base ✔ |
+| `useClearCompletedMutation.ts` | **create** | 4 passed ×3, fails on base ✔ |
+| `schemas.py`, `queryKeys.ts` | skip: outside coverage scope | – |
+
+| Stack | Suite before → after | Lines | Changed lines covered |
+|---|---|---|---|
+| backend | 64 → 70 passed | 96.0 % → 98.7 % | 55.6 % → 100 % |
+| frontend | ❌ 43 passed (10 failing) → ✅ 67 passed | 62.6 % → 78.9 % | 31.2 % → 100 % |
+
+**The result.** The gate flagged `TodosPage.test.tsx` as a changed existing test file: the only removed line is the signature of the `TodosHeader` mock. So the result was published as **suggest-only**: the sticky comment carries the verified patch, and no bot commit was made.
+
+I reviewed the patch and applied it on the branch as a separate commit, after which CI on the PR turned green. A PR that changes no existing test gets the bot commit and the `unit-test-agent/verify` status instead.
 
 ## Assumptions
 
