@@ -14,8 +14,10 @@ pipeline, which trusts nothing the model says, gates, re-runs and publishes the 
 | **Agent output is a patch, not a commit** | The agent works in a disposable copy (`.agent-out/workspace`). `make_patch.py` diffs it against head, and that patch is the only thing that leaves the agent job. |
 | **Security gate outside the agent** (`gate.py`) | Rejects anything outside test paths, config changes, deletes/renames/symlinks, skip/focus markers, pytest hooks or result manipulation, new nested `conftest.py`, network hosts, process execution, secret access, credential-like literals, and size-limit breaches. Permissions and hooks inside the agent are defence in depth only. |
 | **Independent verification without secrets** | A separate job applies the gated patch and runs the checks itself (detailed in the next row), without trusting the agent's report. |
-| **Verify checks, in order** | `prettier --write` + `tsc` (frontend), each new test file run N× (shuffled for vitest), fails-on-base (the test must fail when the changed sources are swapped back to base), full suites before/after with coverage. Failing or flaky files are dropped; the rest stays. |
+| **Verify checks, in order** | `prettier --write` + `tsc` (frontend), each new or updated test file run N× (shuffled for vitest), fails-on-base (the test must fail when the changed sources are swapped back to base), full suites before/after with coverage. Failing or flaky files are dropped; the rest stays. |
 | **Split trust in the workflow** | `detect` (no code, no secrets) → `agent` (PR code + API key, `contents: read`, produces a patch) → `verify` (PR code, **no secrets**) → `publish` (write token, never executes PR code). |
+| **Egress allowlist + human approval for the secret** | The `agent` job, which holds the key next to PR code, runs behind `harden-runner` with `egress-policy: block`. Only the Anthropic API and the GitHub / PyPI / npm endpoints needed for setup are reachable. The `test-agent` environment requires a reviewer's approval before the job starts. |
+| **Diff against the merge base, PR config never trusted** | Snapshots use `git merge-base`, so a moving base branch cannot create false targets. Agent config from the PR (`.claude/`, `CLAUDE.md`, `.mcp.json`, also nested) is stripped from the workspace, and changing it marks the PR as sensitive (label `test-agent:run` required). |
 | **Changed existing assertions are never auto-committed** | If the patch removes lines from an existing test file, publishing falls back to suggest-only with a warning, because weakening assertions could hide a regression. |
 
 ## Where the agent and skills live and how they are used
@@ -75,7 +77,7 @@ Results in the PR:
 
 - a sticky comment: per-file decision, verification, fails-on-base, coverage before/after, suspected bugs, gate findings;
 - the job summary;
-- a commit status `unit-test-agent` on the PR head;
+- a commit status `unit-test-agent` on the PR head: `failure` when the tests fail or the gate rejects the patch, or when the agent did not finish (credentials, budget, API error). `error` when verification crashed, which still comes with a comment;
 - a bot commit with the verified tests, plus status `unit-test-agent/verify`, after which `ci.yml` is dispatched on it;
 - for forks or suggest-only: the patch inside the comment, to apply with `git apply`.
 
@@ -149,6 +151,14 @@ An earlier run on Python 3.14 is also instructive:
 
 I reviewed the patch and applied it on the branch as a separate commit, after which CI on the PR turned green. A PR that changes no existing test gets the bot commit and the `unit-test-agent/verify` status instead.
 
+**Second run** ([workflow run](https://github.com/MagariBiernat/Cloudfide-task/actions/runs/42627016319)) on the push with the applied tests:
+
+- 69 s, $0.38.
+- The agent decided **no test changes are needed**: every changed source file is a `skip`, with the covering test named, and changed-lines coverage is 25/25.
+- Status `unit-test-agent`: success, "No test changes".
+
+The PR comment is sticky, so it now shows this latest run. The first run's full table is in its job summary (link above) and in the tables here.
+
 ## Assumptions
 
 - Only **unit tests** are in scope:
@@ -160,8 +170,9 @@ I reviewed the patch and applied it on the branch as a separate commit, after wh
 
 ## Limitations
 
-- **The `agent` job runs PR code with the API key in the process environment.** No network sandbox is enabled. On Linux, test code could read the `claude` process environment.
-  - Mitigations: forks don't run automatically, test subprocesses get a scrubbed env, reads outside the workspace are denied, the gate rejects credential-like literals, and outputs are redacted.
+- **The `agent` job runs PR code with the API key in the process environment.** On Linux, test code could read the `claude` process environment.
+  - Mitigations: a reviewer must approve every run, and network egress is blocked except the allowlist. The allowlist still contains `api.anthropic.com` and GitHub endpoints.
+  - Further mitigations: forks don't run automatically, test subprocesses get a scrubbed env, reads outside the workspace are denied, the gate rejects credential-like literals, and outputs are redacted.
   - Same-repo PRs can also edit the workflow file itself, so the `test-agent` environment protection is what really guards the secret.
   - Leak detection checks plain, reversed, hex and base64 forms of the key in the patch and in every uploaded output. A rejected or leaking patch is emptied before upload. A key split into pieces or encoded some other way is not detected. Only isolation closes that gap, not filtering.
 - **fails-on-base is file-level, and it swaps every changed source of the stack at once.** It is a strong signal, not a per-test mutation score.
@@ -172,7 +183,7 @@ I reviewed the patch and applied it on the branch as a separate commit, after wh
 
 ## Production version: what I would change
 
-- **Isolation:** run the agent and the tests in a network-isolated container (or the Claude Code sandbox) with egress only to the Anthropic API. Run the tests under a separate UID, with `out/` read-only to them.
+- **Isolation:** run the tests in a container without network and under a separate UID, with `out/` read-only to them. Today only the job-level egress allowlist applies. Keep the key in a proxy, so the agent process never sees it.
 - **Secret flow:** split the workflow into an unprivileged `pull_request` part and a privileged `workflow_run` part, so the workflow file itself always comes from the default branch.
 - **Verification depth:** per-test fails-on-base and mutation testing (mutmut / Stryker) on the changed lines, plus shuffled backend runs (`pytest-randomly`).
 - **Evidence:** a check run with annotations instead of a commit status, and a history of cost and decision quality per run.
